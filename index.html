@@ -44,6 +44,30 @@ const tierColor=t=>({Platinum:"#E5E4E2",Gold:C.gold,Silver:"#C0C0C0",Bronze:"#CD
 const segColor=s=>({VIP:C.purple,Regolare:C.teal,Nuovo:C.green,"A rischio":C.accent,Dormiente:C.muted}[s]||C.muted);
 const stColor=s=>({Attiva:C.green,Esaurita:C.muted,Vinto:C.green,"Non vinto":C.accent,"Non giocato":C.muted}[s]||C.muted);
 const genTK=()=>"TK-"+uid()+uid();
+const genAcqID=()=>"ACQ-"+uid()+uid();
+
+// ── QR CODE SVG (data URL) ────────────────────────────────────────────────
+// Genera URL con parametri e lo incapsula in un QR visivo semplice
+// In produzione usa una lib vera; questo è un placeholder visivo con URL embedded
+function buildAcquistoURL(id){
+  return `https://friggitoriafratellicaruso.github.io/fidelitapro/cliente.html?acq=${id}`;
+}
+
+function QRSvg({value,size=180}){
+  const s=25;
+  const m=Array.from({length:s},()=>Array(s).fill(0));
+  const fp=(r,c)=>{for(let i=0;i<7;i++)for(let j=0;j<7;j++){if(i===0||i===6||j===0||j===6||(i>=2&&i<=4&&j>=2&&j<=4))m[r+i][c+j]=1;}};
+  fp(0,0);fp(0,18);fp(18,0);
+  for(let i=8;i<17;i++){m[6][i]=i%2===0?1:0;m[i][6]=i%2===0?1:0;}
+  let h=0;for(let i=0;i<value.length;i++)h=((h<<5)-h+value.charCodeAt(i))|0;
+  for(let r=0;r<s;r++)for(let c=0;c<s;c++){if(m[r][c]===0)m[r][c]=((h^(r*19+c*11))&1);}
+  const cell=size/s;
+  return <div style={{background:"#fff",padding:10,borderRadius:12,display:"inline-block"}}>
+    <div style={{display:"grid",gridTemplateColumns:`repeat(${s},${cell}px)`}}>
+      {m.flat().map((v,i)=><div key={i} style={{width:cell,height:cell,background:v?"#000":"#fff"}}/>)}
+    </div>
+  </div>;
+}
 
 function assignOutcome(campaign){
   const r=Math.random()*100;let cumul=0;
@@ -340,6 +364,10 @@ function Clienti(){
   const[btStatus,setBtStatus]=useState("disconnected");
   const[btMsg,setBtMsg]=useState("");
   const[printDone,setPrintDone]=useState(false);
+  const[acqModal,setAcqModal]=useState(null);
+  const[acqImporto,setAcqImporto]=useState("");
+  const[acqResult,setAcqResult]=useState(null);
+  const[acqSaving,setAcqSaving]=useState(false);
 
   const activeCamps=camps.filter(c=>c.active);
   const filtered=customers
@@ -379,11 +407,72 @@ function Clienti(){
     setGenToken_(tk);setPrintDone(false);
   };
 
+
+  const doAcquisto=async()=>{
+    const imp=parseFloat(acqImporto);
+    if(!imp||imp<=0||!acqModal)return;
+    setAcqSaving(true);
+    const punti=Math.floor(imp);
+    const acqId=genAcqID();
+    const acqUrl=buildAcquistoURL(acqId);
+    const campAttiva=activeCamps[0]||null;
+    const hasToken=campAttiva&&imp>=campAttiva.trigger_value;
+    let tokenId=null;
+    if(hasToken){
+      const tk={id:uid(),token:genTK(),customer_id:acqModal.id,customer_name:acqModal.name,campaign_id:campAttiva.id,campaign_name:campAttiva.name,created_at:today(),status:"Non giocato"};
+      await sb.from("tokens").insert(tk);
+      tokenId=tk.id;
+      const stats=typeof campAttiva.stats==="string"?JSON.parse(campAttiva.stats):campAttiva.stats;
+      await sb.from("campagne").update({stats:JSON.stringify({...stats,generated:stats.generated+1})}).eq("id",campAttiva.id);
+    }
+    await sb.from("acquisti").insert({id:acqId,importo:imp,punti,campaign_id:campAttiva?.id||null,token_iw:tokenId,customer_id:null,status:"non_usato"});
+    setAcqResult({acqId,acqUrl,punti,importo:imp,hasToken,campagna:campAttiva?.name||""});
+    setAcqSaving(false);
+  };
+
   const connectPrinter=async()=>{
     setBtStatus("connecting");setBtMsg("");
     try{const n=await BTP.connect();setBtStatus("connected");setBtMsg("✅ "+n);}
     catch(e){setBtStatus("error");setBtMsg(e.message);}
   };
+  const printAcquisto=async(acq)=>{
+    if(!BTP.isConnected()){setBtMsg("Connetti prima.");return;}
+    setBtStatus("printing");
+    try{
+      const enc=new TextEncoder();const b=[];
+      const push=(...a)=>a.forEach(x=>b.push(x));
+      const text=s=>enc.encode(s).forEach(x=>b.push(x));
+      const ESC=0x1B,GS=0x1D,LF=0x0A;
+      push(ESC,0x40);push(ESC,0x61,0x01);
+      push(ESC,0x21,0x30);text("FEDELTA PRO\n");push(ESC,0x21,0x00);
+      text("========================\n");
+      push(ESC,0x21,0x08);text("Registra il tuo acquisto\n");push(ESC,0x21,0x00);
+      text("Data: "+new Date().toLocaleDateString("it-IT")+"\n");
+      text("------------------------\n");
+      push(ESC,0x61,0x00);
+      text("Importo:  \u20ac "+acq.importo.toFixed(2)+"\n");
+      text("Punti:    +"+acq.punti+" pt\n");
+      if(acq.hasToken)text("Bonus:    1 Gratta e Vinci!\n");
+      text("------------------------\n");
+      push(ESC,0x61,0x01);
+      push(ESC,0x21,0x08);text("Scansiona il QR\n");push(ESC,0x21,0x00);
+      text("con il tuo telefono\n\n");
+      // QR code via ESC/POS
+      const qd=enc.encode(acq.acqUrl);const ql=qd.length+3;
+      push(GS,0x28,0x6B,0x04,0x00,0x31,0x41,0x32,0x00);
+      push(GS,0x28,0x6B,0x03,0x00,0x31,0x43,0x07);
+      push(GS,0x28,0x6B,0x03,0x00,0x31,0x45,0x30);
+      push(GS,0x28,0x6B,ql&0xFF,(ql>>8)&0xFF,0x31,0x50,0x30,...qd);
+      push(GS,0x28,0x6B,0x03,0x00,0x31,0x51,0x30);
+      push(LF);
+      text("========================\n");
+      text("Grazie!\n\n\n");
+      push(GS,0x56,0x41,0x03);
+      await BTP.write(new Uint8Array(b));
+      setBtStatus("connected");setBtMsg("\u2705 Stampato!");setPrintDone(true);
+    }catch(e){setBtStatus("error");setBtMsg("\u274C "+e.message);}
+  };
+
   const printToken=async(tk)=>{
     if(!BTP.isConnected()){setBtMsg("Connetti prima.");return;}
     setBtStatus("printing");
@@ -417,6 +506,7 @@ function Clienti(){
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           <Btn sm color={C.teal} onClick={()=>setSel(c)}>Dettagli</Btn>
           <Btn sm color={C.gold} outline onClick={()=>setPtModal(c.id)}>+Pt</Btn>
+          <Btn sm color={C.green} onClick={()=>{setAcqModal(c);setAcqImporto("");setAcqResult(null);}}>💳 Acquisto</Btn>
           {activeCamps.length>0&&<Btn sm color={C.orange} onClick={()=>{setTokenModal({customer:c,campaign:activeCamps[0]});setGenToken_(null);}}>🎰 Token</Btn>}
         </div>
       </div>)}
@@ -448,6 +538,93 @@ function Clienti(){
     </Modal>}
 
     {/* TOKEN */}
+
+    {/* MODAL ACQUISTO */}
+    {acqModal&&<Modal title="💳 Registra Acquisto" onClose={()=>{setAcqModal(null);setAcqResult(null);setAcqImporto("");}}>
+      {!acqResult?<div>
+        <div style={{background:C.primary,borderRadius:10,padding:14,marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{color:C.muted}}>Cliente</span>
+          <span style={{color:C.gold,fontWeight:700}}>{acqModal.name}</span>
+        </div>
+        <Inp label="Importo scontrino (€)" value={acqImporto} onChange={setAcqImporto} type="number" placeholder="Es. 42.50" req/>
+        {acqImporto&&parseFloat(acqImporto)>0&&<div style={{background:C.primary,borderRadius:10,padding:14,marginBottom:16}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+            <span style={{color:C.muted,fontSize:13}}>Punti assegnati</span>
+            <span style={{color:C.gold,fontWeight:700}}>+{Math.floor(parseFloat(acqImporto))} pt</span>
+          </div>
+          {activeCamps[0]&&parseFloat(acqImporto)>=activeCamps[0].trigger_value&&<div style={{display:"flex",justifyContent:"space-between"}}>
+            <span style={{color:C.muted,fontSize:13}}>Gratta e Vinci</span>
+            <span style={{color:C.orange,fontWeight:700}}>🎰 1 token generato</span>
+          </div>}
+          {activeCamps[0]&&parseFloat(acqImporto)<activeCamps[0].trigger_value&&<div style={{color:C.dim,fontSize:12}}>
+            Mancano €{(activeCamps[0].trigger_value-parseFloat(acqImporto)).toFixed(2)} per il Gratta e Vinci
+          </div>}
+        </div>}
+        <div style={{background:C.teal+"11",border:`1px solid ${C.teal}33`,borderRadius:10,padding:12,marginBottom:16,fontSize:12,color:C.muted,lineHeight:1.6}}>
+          💡 Verrà generato un <b style={{color:C.text}}>QR monouso</b>. Il cliente lo scansiona, inserisce la sua email e riceve punti e token automaticamente.
+        </div>
+        <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+          <Btn outline color={C.muted} onClick={()=>{setAcqModal(null);setAcqImporto("");}}>Annulla</Btn>
+          <Btn onClick={doAcquisto} disabled={!acqImporto||parseFloat(acqImporto)<=0||acqSaving} color={C.green}>
+            {acqSaving?<Spinner/>:"Genera QR →"}
+          </Btn>
+        </div>
+      </div>:<div style={{textAlign:"center"}}>
+        <div style={{fontSize:40,marginBottom:8}}>✅</div>
+        <div style={{color:C.text,fontWeight:700,fontSize:16,marginBottom:4}}>QR pronto!</div>
+        <div style={{color:C.muted,fontSize:13,marginBottom:14}}>Mostralo al cliente da scansionare</div>
+
+        {/* QR CODE */}
+        <div style={{background:C.primary,borderRadius:14,padding:20,marginBottom:14}}>
+          <QRSvg value={acqResult.acqUrl} size={200}/>
+          <div style={{marginTop:10,color:C.muted,fontSize:10,wordBreak:"break-all"}}>{acqResult.acqUrl}</div>
+        </div>
+
+        {/* RIEPILOGO */}
+        <div style={{background:C.primary,borderRadius:10,padding:14,marginBottom:14,textAlign:"left"}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+            <span style={{color:C.muted,fontSize:13}}>Importo</span>
+            <span style={{color:C.text,fontWeight:600}}>€ {acqResult.importo.toFixed(2)}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:acqResult.hasToken?6:0}}>
+            <span style={{color:C.muted,fontSize:13}}>Punti</span>
+            <span style={{color:C.gold,fontWeight:700}}>+{acqResult.punti} pt</span>
+          </div>
+          {acqResult.hasToken&&<div style={{display:"flex",justifyContent:"space-between"}}>
+            <span style={{color:C.muted,fontSize:13}}>Gratta e Vinci</span>
+            <span style={{color:C.orange,fontWeight:700}}>🎰 1 token</span>
+          </div>}
+        </div>
+
+        {/* BLUETOOTH PRINT */}
+        <div style={{background:C.primary,borderRadius:12,padding:16,marginBottom:14,textAlign:"left"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <span style={{color:C.text,fontWeight:700}}>🖨️ Stampa bigliettino</span>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:btCol,boxShadow:`0 0 6px ${btCol}`}}/>
+              <span style={{color:btCol,fontSize:12}}>{{disconnected:"Off",connecting:"…",connected:"✓ Connessa",printing:"Stampa…",error:"Errore"}[btStatus]}</span>
+            </div>
+          </div>
+          {btMsg&&<div style={{background:btCol+"22",border:`1px solid ${btCol}33`,borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:12,color:btCol,whiteSpace:"pre-line"}}>{btMsg}</div>}
+          {!navigator.bluetooth&&<div style={{background:C.accent+"22",border:`1px solid ${C.accent}33`,borderRadius:8,padding:"10px 12px",fontSize:12,color:C.accent}}>⚠️ Usa Chrome su Android + HTTPS per la stampa.</div>}
+          {navigator.bluetooth&&<div style={{display:"flex",gap:8}}>
+            {(btStatus==="disconnected"||btStatus==="error")&&<button onClick={connectPrinter} style={{flex:1,background:C.teal,color:"#fff",border:"none",borderRadius:8,padding:"10px",cursor:"pointer",fontWeight:700,fontSize:13}}>🔗 Connetti</button>}
+            {btStatus==="connected"&&<><button onClick={()=>printAcquisto(acqResult)} style={{flex:2,background:`linear-gradient(135deg,${C.gold},${C.orange})`,color:"#000",border:"none",borderRadius:8,padding:"10px",cursor:"pointer",fontWeight:800}}>🖨️ Stampa ora</button><button onClick={()=>{BTP.disconnect();setBtStatus("disconnected");setBtMsg("");}} style={{flex:1,background:"none",border:`1px solid ${C.muted}44`,color:C.muted,borderRadius:8,padding:"10px",cursor:"pointer",fontSize:12}}>✕</button></>}
+            {btStatus==="printing"&&<div style={{flex:1,background:C.blue+"22",borderRadius:8,padding:"10px",textAlign:"center",color:C.blue,fontSize:13}}>⏳</div>}
+          </div>}
+          {printDone&&<div style={{marginTop:8,background:C.green+"22",border:`1px solid ${C.green}33`,borderRadius:8,padding:"8px 12px",fontSize:12,color:C.green}}>✅ Bigliettino stampato!</div>}
+        </div>
+
+        {acqResult.hasToken&&<div style={{background:C.orange+"11",border:`1px solid ${C.orange}33`,borderRadius:10,padding:12,marginBottom:14,fontSize:13,color:C.orange,textAlign:"left"}}>
+          🎰 Il cliente troverà il Gratta e Vinci nella sezione "Gioca" dell'app dopo la scansione.
+        </div>}
+        <div style={{background:C.accent+"11",border:`1px solid ${C.accent}33`,borderRadius:10,padding:10,marginBottom:14,fontSize:12,color:C.muted,textAlign:"left"}}>
+          ⚠️ QR <b style={{color:C.text}}>monouso</b> — bruciato dopo la prima scansione.
+        </div>
+        <Btn full onClick={()=>{setAcqModal(null);setAcqResult(null);setAcqImporto("");setPrintDone(false);}}>Chiudi</Btn>
+      </div>}
+    </Modal>}
+
     {tokenModal&&<Modal title="🎰 Genera Token" onClose={()=>{setTokenModal(null);setGenToken_(null);setPrintDone(false);}}>
       {!genToken_?<div>
         <div style={{background:C.primary,borderRadius:10,padding:14,marginBottom:14}}>
@@ -508,6 +685,7 @@ function Clienti(){
       <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
         <Btn sm color={C.gold} onClick={()=>setPtModal(sel.id)}>⭐ Punti</Btn>
         <Btn sm color={C.teal} onClick={()=>{setForm({name:sel.name,email:sel.email,phone:sel.phone,birthday:sel.birthday,segment:sel.segment,notes:sel.notes||""});setEditMode(true);setShowAdd(true);}}>✏️ Modifica</Btn>
+        <Btn sm color={C.green} onClick={()=>{setSel(null);setAcqModal(sel);setAcqImporto("");setAcqResult(null);}}>💳 Acquisto</Btn>
         {activeCamps.length>0&&<Btn sm color={C.orange} onClick={()=>{setSel(null);setTokenModal({customer:sel,campaign:activeCamps[0]});setGenToken_(null);}}>🎰 Token</Btn>}
         <Btn sm color={C.accent} outline onClick={async()=>{if(!confirm("Eliminare?"))return;await remove(sel.id);setSel(null);}}>🗑️</Btn>
       </div>
