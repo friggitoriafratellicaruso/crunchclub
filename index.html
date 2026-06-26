@@ -395,7 +395,8 @@ function GiocaToken({token,onBack}){
     (async()=>{
       const{data:tk}=await sb.from("tokens").select("*").eq("token",token).single();
       if(!tk){setPhase("notfound");return;}
-      if(tk.status!=="Non giocato"){setTokenData(tk);setPhase("used");return;}
+      if(tk.riscosso){setTokenData(tk);setPhase("riscosso");return;}
+    if(tk.status!=="Non giocato"){setTokenData(tk);setPhase("used");return;}
       const{data:camp}=await sb.from("campagne").select("*").eq("id",tk.campaign_id).single();
       if(!camp||!camp.active){setPhase("notfound");return;}
       setTokenData(tk);setCampaign({...camp,prizes:typeof camp.prizes==="string"?JSON.parse(camp.prizes):camp.prizes});
@@ -421,6 +422,19 @@ function GiocaToken({token,onBack}){
   };
 
   if(phase==="loading")return <div style={{minHeight:"100vh",background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={30}/><div style={{color:T.muted}}>Verifica token…</div></div>;
+  if(phase==="riscosso")return <div style={{minHeight:"100vh",background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+    <div style={{textAlign:"center",maxWidth:320}}>
+      <div style={{fontSize:52,marginBottom:16}}>✅</div>
+      <h2 style={{color:T.text,fontSize:20,marginBottom:12}}>Premio già ritirato</h2>
+      <div style={{background:T.card,borderRadius:14,padding:18,marginBottom:20,border:`1px solid ${T.green}33`}}>
+        <div style={{color:T.green,fontWeight:700,fontSize:15,marginBottom:6}}>🏆 {tokenData?.prize_name}</div>
+        <div style={{color:T.muted,fontSize:13}}>Ritirato il {tokenData?.riscosso_at?.slice(0,10)||"—"}</div>
+      </div>
+      <p style={{color:T.muted,fontSize:13,lineHeight:1.6,marginBottom:20}}>Questo premio è già stato consegnato al banco. Non può essere riutilizzato.</p>
+      {onBack&&<button onClick={onBack} style={{background:T.accent,border:"none",color:"#000",borderRadius:12,padding:"12px 24px",fontWeight:700,cursor:"pointer"}}>← Torna all'app</button>}
+    </div>
+  </div>;
+
   if(phase==="notfound")return <div style={{minHeight:"100vh",background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}><div style={{textAlign:"center"}}><div style={{fontSize:48,marginBottom:16}}>😕</div><h2 style={{color:T.text,marginBottom:8}}>Token non valido</h2><p style={{color:T.muted,marginBottom:20}}>Il token non esiste o la campagna è terminata.</p>{onBack&&<button onClick={onBack} style={{background:T.accent,border:"none",color:"#000",borderRadius:12,padding:"12px 24px",fontWeight:700,cursor:"pointer"}}>← Torna</button>}</div></div>;
   if(phase==="used")return <div style={{minHeight:"100vh",background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}><div style={{textAlign:"center",maxWidth:300}}><div style={{fontSize:48,marginBottom:16}}>{tokenData?.won?"🏆":"😔"}</div><h2 style={{color:T.text,marginBottom:8}}>Token già usato</h2><div style={{background:T.card,borderRadius:14,padding:16,marginBottom:20}}><div style={{color:tokenData?.won?T.accent:T.muted,fontWeight:700,fontSize:16}}>{tokenData?.won?("🏆 "+tokenData.prize_name):"Non vinto"}</div><div style={{color:T.dim,fontSize:11,marginTop:4}}>Giocato il {tokenData?.played_at}</div></div>{onBack&&<button onClick={onBack} style={{background:T.accent,border:"none",color:"#000",borderRadius:12,padding:"12px 24px",fontWeight:700,cursor:"pointer"}}>← Torna</button>}</div></div>;
 
@@ -511,7 +525,7 @@ function GiocaPage({customer,onPlay}){
   const[tokenInput,setTokenInput]=useState("");
   const[tokens,setTokens]=useState([]);
   const[loading,setLoading]=useState(true);
-  useEffect(()=>{(async()=>{const{data}=await sb.from("tokens").select("*").eq("customer_id",customer.id).eq("status","Non giocato").order("created_at",{ascending:false});setTokens(data||[]);setLoading(false);})();},[customer.id]);
+  useEffect(()=>{(async()=>{const{data}=await sb.from("tokens").select("*").eq("customer_id",customer.id).eq("status","Non giocato").eq("riscosso",false).order("created_at",{ascending:false});setTokens(data||[]);setLoading(false);})();},[customer.id]);
   return <div className="fade" style={{padding:"20px 16px",paddingBottom:80}}>
     <h2 style={{color:T.text,fontSize:20,marginBottom:4}}>Instant Win</h2>
     <p style={{color:T.muted,fontSize:13,marginBottom:20}}>I tuoi gratta e vinci disponibili</p>
