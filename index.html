@@ -405,7 +405,7 @@ function AcquistoQR({acqId,customer,onDone,onGoRegistra}){
       <button onClick={()=>conferma(null)} disabled={loading} style={{width:"100%",background:`linear-gradient(135deg,${T.teal},${T.accent})`,border:"none",color:"#000",borderRadius:14,padding:"15px",fontSize:16,fontWeight:800,cursor:"pointer",opacity:loading?.7:1,marginBottom:12}}>
         {loading?<Spinner size={18} color="#000"/>:"Conferma e ricevi punti →"}
       </button>
-      {err&&err.includes("registrarsi")&&<div style={{textAlign:"center"}}>
+      {err&&err.includes("creare un account")&&<div style={{textAlign:"center"}}>
         <div style={{color:T.muted,fontSize:13,marginBottom:10}}>Non hai ancora un account CrunchClub?</div>
         <button onClick={()=>onGoRegistra&&onGoRegistra(acqId)} style={{width:"100%",background:`linear-gradient(135deg,${T.accent},${T.rose})`,border:"none",color:"#000",borderRadius:14,padding:"14px",fontSize:15,fontWeight:800,cursor:"pointer"}}>
           → Crea account e ricevi i punti
