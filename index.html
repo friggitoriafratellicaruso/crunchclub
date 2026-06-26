@@ -46,6 +46,7 @@ const URL_PARAMS=new URLSearchParams(window.location.search);
 const URL_ACQ=URL_PARAMS.get("acq")||null;
 const URL_TOKEN=URL_PARAMS.get("t")||URL_PARAMS.get("token")||null;
 // Supabase manda il token di conferma email come hash nella URL
+const URL_REGISTER=URL_PARAMS.get('register')==='1'||false;
 const IS_EMAIL_CONFIRM=window.location.hash.includes("access_token")||URL_PARAMS.get("type")==="signup";
 
 function assignOutcome(prizes){const r=Math.random()*100;let c=0;for(const p of prizes){c+=p.probability;if(r<c&&p.remaining>0)return{won:true,prizeName:p.name,prizeId:p.id};}return{won:false,prizeName:null,prizeId:null};}
@@ -290,11 +291,10 @@ function ConfermaEmail({onDone}){
 // ══════════════════════════════════════════════════════════════════
 // ACQUISTO QR
 // ══════════════════════════════════════════════════════════════════
-function AcquistoQR({acqId,customer,onDone}){
+function AcquistoQR({acqId,customer,onDone,onGoRegistra}){
   const[phase,setPhase]=useState("loading");
   const[acqData,setAcqData]=useState(null);
   const[email,setEmail]=useState(customer?.email||"");
-  const[nome,setNome]=useState("");
   const[loading,setLoading]=useState(false);
   const[err,setErr]=useState("");
   const[result,setResult]=useState(null);
@@ -314,20 +314,37 @@ function AcquistoQR({acqId,customer,onDone}){
     setLoading(true);setErr("");
     let cl=cliente;
     if(!cl){
-      const{data}=await sb.from("clienti").select("*").eq("email",email.trim().toLowerCase()).single();
-      if(!data){
-        if(!nome.trim()){setErr("Email non trovata. Inserisci il tuo nome per registrarti.");setLoading(false);return;}
-        const{data:n,error}=await sb.from("clienti").insert({name:(nome+" ").trim(),cognome:"",email:email.trim().toLowerCase(),phone:"",segment:"Nuovo",tier:"Bronze",points:0,spent:0,visits:0,last_visit:today(),join_date:today(),referrals:0,cashback:0,tags:[],notes:""}).select().single();
-        if(error){setErr("Errore: "+error.message);setLoading(false);return;}
-        cl=n;
-      }else cl=data;
+      // Cerca per email nel DB clienti
+      const{data:byEmail}=await sb.from("clienti").select("*").eq("email",email.trim().toLowerCase()).single();
+      if(byEmail){
+        cl=byEmail;
+      } else {
+        // Cerca se è un utente Supabase Auth già registrato ma senza profilo cliente
+        const{data:{session}}=await sb.auth.getSession();
+        if(session&&session.user.email===email.trim().toLowerCase()){
+          // Crea il profilo cliente collegato all'utente auth
+          const{data:n}=await sb.from("clienti").insert({
+            auth_id:session.user.id,
+            name:(session.user.user_metadata?.nome||""+" "+session.user.user_metadata?.cognome||"").trim()||email.split("@")[0],
+            email:email.trim().toLowerCase(),phone:session.user.user_metadata?.telefono||"",
+            segment:"Nuovo",tier:"Bronze",points:0,spent:0,visits:0,
+            last_visit:today(),join_date:today(),referrals:0,cashback:0,tags:[],notes:""
+          }).select().single();
+          cl=n;
+        } else {
+          // Email non trovata → deve registrarsi completamente
+          setErr("Email non trovata. Devi prima creare un account.");
+          setLoading(false);
+          return;
+        }
+      }
     }
     const nuoviPunti=cl.points+acqData.punti;
     const tier=nuoviPunti>=3000?"Platinum":nuoviPunti>=1500?"Gold":nuoviPunti>=500?"Silver":"Bronze";
     await sb.from("clienti").update({points:nuoviPunti,tier,spent:Number(cl.spent)+Number(acqData.importo),visits:cl.visits+1,last_visit:today()}).eq("id",cl.id);
     if(acqData.token_iw)await sb.from("tokens").update({customer_id:cl.id}).eq("id",acqData.token_iw);
     await sb.from("acquisti").update({status:"usato",customer_id:cl.id,used_at:new Date().toISOString()}).eq("id",acqId);
-    setResult({punti:acqData.punti,hasToken:!!acqData.token_iw,nome:cl.name?.split(" ")[0]||"",isNew:cl.join_date===today()});
+    setResult({punti:acqData.punti,hasToken:!!acqData.token_iw,nome:cl.name?.split(" ")[0]||""});
     setPhase("done");setLoading(false);
   };
 
@@ -353,8 +370,12 @@ function AcquistoQR({acqId,customer,onDone}){
         <div style={{color:T.accent,fontWeight:800,fontSize:16,marginBottom:6}}>Hai un Gratta e Vinci!</div>
         <div style={{color:T.muted,fontSize:13,lineHeight:1.6}}>Vai nella sezione <b style={{color:T.text}}>Gioca</b> per trovare i tuoi gratta e vinci.</div>
       </div>}
-      {onDone?<button onClick={onDone} style={{width:"100%",background:`linear-gradient(135deg,${T.accent},${T.rose})`,border:"none",color:"#000",borderRadius:14,padding:"15px",fontSize:16,fontWeight:800,cursor:"pointer"}}>Vai all'app →</button>
-      :<div style={{color:T.dim,fontSize:12}}>Chiudi questa pagina o accedi all'app per giocare.</div>}
+      <button onClick={()=>{
+        if(onDone)onDone();
+        else window.location.href="https://friggitoriafratellicaruso.github.io/crunchclub";
+      }} style={{width:"100%",background:`linear-gradient(135deg,${T.accent},${T.rose})`,border:"none",color:"#000",borderRadius:14,padding:"15px",fontSize:16,fontWeight:800,cursor:"pointer"}}>
+        {result?.hasToken?"🎰 Vai all'app per giocare →":"Vai all'app →"}
+      </button>
     </div>
   </div>;
 
@@ -381,10 +402,16 @@ function AcquistoQR({acqId,customer,onDone}){
     </div>:<div style={{width:"100%",maxWidth:340}}>
       <ErrBox msg={err}/>
       <FieldInput label="La tua email" type="email" value={email} onChange={setEmail} placeholder="mario@email.it" required/>
-      {err&&err.includes("nome")&&<FieldInput label="Il tuo nome (per registrarti)" value={nome} onChange={setNome} placeholder="Mario Rossi"/>}
-      <button onClick={()=>conferma(null)} disabled={loading} style={{width:"100%",background:`linear-gradient(135deg,${T.teal},${T.accent})`,border:"none",color:"#000",borderRadius:14,padding:"15px",fontSize:16,fontWeight:800,cursor:"pointer",opacity:loading?.7:1}}>
+      <button onClick={()=>conferma(null)} disabled={loading} style={{width:"100%",background:`linear-gradient(135deg,${T.teal},${T.accent})`,border:"none",color:"#000",borderRadius:14,padding:"15px",fontSize:16,fontWeight:800,cursor:"pointer",opacity:loading?.7:1,marginBottom:12}}>
         {loading?<Spinner size={18} color="#000"/>:"Conferma e ricevi punti →"}
       </button>
+      {err&&err.includes("registrarsi")&&<div style={{textAlign:"center"}}>
+        <div style={{color:T.muted,fontSize:13,marginBottom:10}}>Non hai ancora un account CrunchClub?</div>
+        <button onClick={()=>onGoRegistra&&onGoRegistra(acqId)} style={{width:"100%",background:`linear-gradient(135deg,${T.accent},${T.rose})`,border:"none",color:"#000",borderRadius:14,padding:"14px",fontSize:15,fontWeight:800,cursor:"pointer"}}>
+          → Crea account e ricevi i punti
+        </button>
+        <div style={{color:T.dim,fontSize:11,marginTop:8,lineHeight:1.5}}>Completa la registrazione e i tuoi punti verranno accreditati automaticamente.</div>
+      </div>}
     </div>}
   </div>;
 }
@@ -617,7 +644,12 @@ function App(){
     const{data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
       if(event==="SIGNED_IN"&&session){
         const{data:cl}=await sb.from("clienti").select("*").eq("auth_id",session.user.id).single();
-        if(cl)setCustomer(cl);
+        if(cl){
+          setCustomer(cl);
+          // Se c'era un acquisto pendente, reindirizza a completarlo
+          const pendingAcq=sessionStorage.getItem("pending_acq");
+          if(pendingAcq){sessionStorage.removeItem("pending_acq");window.location.href="https://friggitoriafratellicaruso.github.io/crunchclub?acq="+pendingAcq;}
+        }
       }
       if(event==="SIGNED_OUT")setCustomer(null);
     });
@@ -632,11 +664,21 @@ function App(){
   if(IS_EMAIL_CONFIRM)return <ConfermaEmail onDone={()=>{window.location.href=window.location.pathname;}}/>;
 
   // QR acquisto — funziona anche senza login
-  if(URL_ACQ)return <AcquistoQR acqId={URL_ACQ} customer={customer} onDone={customer?()=>{window.location.href=window.location.pathname}:null}/>;
+  if(URL_ACQ)return <AcquistoQR acqId={URL_ACQ} customer={customer}
+    onDone={()=>{
+      if(customer)window.location.href=window.location.pathname;
+      else window.location.href="https://friggitoriafratellicaruso.github.io/crunchclub";
+    }}
+    onGoRegistra={(acqId)=>{
+      // Salva l'acqId in sessionStorage e vai alla registrazione
+      sessionStorage.setItem("pending_acq",acqId);
+      window.location.href="https://friggitoriafratellicaruso.github.io/crunchclub?register=1";
+    }}
+  />;
 
   // Non autenticato
   if(!customer){
-    if(authPage==="registra")return <Registrazione onLogin={setCustomer} onGoLogin={()=>setAuthPage("login")}/>;
+    if(authPage==="registra"||URL_REGISTER)return <Registrazione onLogin={setCustomer} onGoLogin={()=>{setAuthPage("login");if(URL_REGISTER)window.history.replaceState({},"",window.location.pathname);}}/>;
     return <Login onLogin={setCustomer} onGoRegistra={()=>setAuthPage("registra")}/>;
   }
 
