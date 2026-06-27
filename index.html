@@ -452,13 +452,79 @@ function AcquistoQR({acqId,customer,onDone,onGoRegistra}){
 
 // ══════════════════════════════════════════════════════════════════
 // INSTANT WIN — gioca token
+// ── SCRATCH CARD CANVAS ───────────────────────────────────────────
+function ScratchCard({won,prizeName,onScratched}){
+  const canvasRef=useRef(null);
+  const drawing=useRef(false);
+  const notified=useRef(false);
+  const W=280,H=170,BRUSH=42,REVEAL_AT=50;
+
+  useEffect(()=>{
+    const canvas=canvasRef.current;if(!canvas)return;
+    const ctx=canvas.getContext("2d");
+    ctx.clearRect(0,0,W,H);
+    // Layer opaco dorato
+    const grad=ctx.createLinearGradient(0,0,W,H);
+    grad.addColorStop(0,"#9A6700");
+    grad.addColorStop(0.3,"#F0A500");
+    grad.addColorStop(0.6,"#FFD700");
+    grad.addColorStop(1,"#9A6700");
+    ctx.fillStyle=grad;
+    ctx.beginPath();ctx.roundRect(0,0,W,H,18);ctx.fill();
+    // Pattern diagonale
+    ctx.strokeStyle="rgba(255,255,255,0.12)";ctx.lineWidth=1.5;
+    for(let i=0;i<W+H;i+=20){ctx.beginPath();ctx.moveTo(i,0);ctx.lineTo(0,i);ctx.stroke();}
+    // Stelle decorative
+    ctx.fillStyle="rgba(255,255,255,0.25)";ctx.font="16px serif";
+    [[40,40],[240,40],[140,130],[70,120],[210,110]].forEach(([x,y])=>{ctx.fillText("★",x,y);});
+    // Testo centrale
+    ctx.fillStyle="rgba(0,0,0,0.55)";ctx.font="bold 14px Inter,system-ui,sans-serif";
+    ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText("👆  Gratta qui!",W/2,H/2-10);
+    ctx.font="12px Inter,system-ui,sans-serif";
+    ctx.fillStyle="rgba(0,0,0,0.4)";
+    ctx.fillText("Trascina il dito per scoprire",W/2,H/2+14);
+    notified.current=false;
+  },[won,prizeName]);
+
+  const getXY=(e,canvas)=>{
+    const r=canvas.getBoundingClientRect();
+    const sx=canvas.width/r.width,sy=canvas.height/r.height;
+    if(e.touches)return[(e.touches[0].clientX-r.left)*sx,(e.touches[0].clientY-r.top)*sy];
+    return[(e.clientX-r.left)*sx,(e.clientY-r.top)*sy];
+  };
+
+  const scratch=(e)=>{
+    if(!drawing.current)return;
+    e.preventDefault();
+    const canvas=canvasRef.current;if(!canvas)return;
+    const ctx=canvas.getContext("2d");
+    const[x,y]=getXY(e,canvas);
+    ctx.globalCompositeOperation="destination-out";
+    ctx.beginPath();ctx.arc(x,y,BRUSH,0,Math.PI*2);ctx.fill();
+    ctx.globalCompositeOperation="source-over";
+    if(notified.current)return;
+    const img=ctx.getImageData(0,0,W,H);
+    let t=0;for(let i=3;i<img.data.length;i+=4)if(img.data[i]<128)t++;
+    if(t/(W*H)*100>=REVEAL_AT){notified.current=true;onScratched();}
+  };
+
+  const start=(e)=>{drawing.current=true;scratch(e);};
+  const stop=()=>{drawing.current=false;};
+
+  return <canvas ref={canvasRef} width={W} height={H}
+    style={{borderRadius:18,cursor:"crosshair",display:"block",touchAction:"none",width:"100%",maxWidth:W,boxShadow:`0 0 0 2px ${T.accent}66,0 8px 24px rgba(0,0,0,0.4)`}}
+    onMouseDown={start} onMouseMove={scratch} onMouseUp={stop} onMouseLeave={stop}
+    onTouchStart={start} onTouchMove={scratch} onTouchEnd={stop}
+  />;
+}
+
 // ══════════════════════════════════════════════════════════════════
 function GiocaToken({token,onBack}){
   const[phase,setPhase]=useState("loading");
   const[tokenData,setTokenData]=useState(null);
   const[campaign,setCampaign]=useState(null);
   const[result,setResult]=useState(null);
-  const[scratchPct,setScratchPct]=useState(0);
   const[scratched,setScratched]=useState(false);
   const[confetti,setConfetti]=useState(false);
 
@@ -488,10 +554,7 @@ function GiocaToken({token,onBack}){
     setResult(outcome);
   };
 
-  const doScratch=()=>{
-    if(scratched)return;
-    let p=0;const iv=setInterval(()=>{p=Math.min(100,p+9);setScratchPct(p);if(p>=100){clearInterval(iv);setScratched(true);if(result?.won)setConfetti(true);}},25);
-  };
+  const doScratch=()=>{}; // gestito dal canvas ScratchCard
 
   if(phase==="loading")return <div style={{minHeight:"100vh",background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><Spinner size={30}/><div style={{color:T.muted}}>Verifica token…</div></div>;
   if(phase==="riscosso")return <div style={{minHeight:"100vh",background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
@@ -522,14 +585,16 @@ function GiocaToken({token,onBack}){
     {phase==="play"&&<div style={{textAlign:"center",maxWidth:340,width:"100%"}}>
       {!result?<><Spinner size={40}/><p style={{color:T.muted,marginTop:16}}>Estrazione…</p></>
       :<div>
-        <p style={{color:T.muted,marginBottom:16,fontSize:13}}>👆 Tocca per grattare!</p>
-        <div style={{position:"relative",width:280,height:170,margin:"0 auto 20px",cursor:"pointer"}} onClick={doScratch}>
-          <div style={{position:"absolute",inset:0,borderRadius:20,background:result.won?"linear-gradient(135deg,#0a2010,#082008)":"linear-gradient(135deg,#1f0a0a,#2a0d0d)",border:`2px solid ${result.won?T.green:T.rose}33`,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:10}}>
-            {result.won?<><div style={{fontSize:40}}>🏆</div><div style={{color:T.green,fontWeight:900,fontSize:20}}>VINTO!</div><div style={{color:T.text,fontSize:15,fontWeight:600}}>{result.prizeName}</div><div style={{color:T.muted,fontSize:12}}>Mostra al locale per ritirare</div></>
-            :<><div style={{fontSize:40}}>😔</div><div style={{color:T.rose,fontWeight:700,fontSize:18}}>Non vinto</div><div style={{color:T.muted,fontSize:13,marginTop:4}}>Ritenta al prossimo acquisto!</div></>}
+        <p style={{color:T.muted,marginBottom:16,fontSize:13}}>👆 Trascina il dito per grattare!</p>
+        <div style={{position:"relative",width:"100%",maxWidth:280,margin:"0 auto 20px"}}>
+          {/* Esito — completamente nascosto dal canvas */}
+          <div style={{borderRadius:20,background:result.won?"linear-gradient(135deg,#0a2010,#082008)":"linear-gradient(135deg,#1f0a0a,#2a0d0d)",border:`2px solid ${result.won?T.green:T.rose}33`,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:10,height:170,padding:12}}>
+            {result.won
+              ?<><div style={{fontSize:40}}>🏆</div><div style={{color:T.green,fontWeight:900,fontSize:20}}>VINTO!</div><div style={{color:T.text,fontSize:15,fontWeight:600}}>{result.prizeName}</div><div style={{color:T.muted,fontSize:12}}>Mostra al locale per ritirare</div></>
+              :<><div style={{fontSize:40}}>😔</div><div style={{color:T.rose,fontWeight:700,fontSize:18}}>Non vinto</div><div style={{color:T.muted,fontSize:13,marginTop:4}}>Ritenta al prossimo acquisto!</div></>}
           </div>
-          {!scratched&&<div style={{position:"absolute",inset:0,borderRadius:20,background:`repeating-linear-gradient(45deg,${T.accent}CC,${T.accent}CC 14px,${T.accent}99 14px,${T.accent}99 28px)`,clipPath:`inset(0 ${scratchPct}% 0 0 round 20px)`,border:`2px solid ${T.accent}`,display:"flex",alignItems:"center",justifyContent:"center"}}>
-            {scratchPct===0&&<div style={{color:"#000",fontWeight:900,fontSize:14}}>👆 Tocca per grattare!</div>}
+          {!scratched&&<div style={{position:"absolute",inset:0}}>
+            <ScratchCard won={result.won} prizeName={result.prizeName} onScratched={()=>{setScratched(true);if(result.won)setConfetti(true);}}/>
           </div>}
         </div>
         {scratched&&onBack&&<button onClick={onBack} style={{background:T.accent,border:"none",color:"#000",borderRadius:12,padding:"12px 24px",fontWeight:700,cursor:"pointer"}}>← Torna all'app</button>}
