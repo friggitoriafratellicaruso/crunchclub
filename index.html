@@ -47,6 +47,8 @@ const URL_ACQ=URL_PARAMS.get("acq")||null;
 const URL_TOKEN=URL_PARAMS.get("t")||URL_PARAMS.get("token")||null;
 // Supabase manda il token di conferma email come hash nella URL
 const URL_REGISTER=URL_PARAMS.get('register')==='1'||false;
+// Se register=1, pulisci subito l'URL per evitare che Supabase lo reinterpreti
+if(URL_REGISTER&&window.history)window.history.replaceState({},"",window.location.pathname+"?register=1");
 const IS_EMAIL_CONFIRM=window.location.hash.includes("access_token")||URL_PARAMS.get("type")==="signup";
 
 function assignOutcome(prizes){const r=Math.random()*100;let c=0;for(const p of prizes){c+=p.probability;if(r<c&&p.remaining>0)return{won:true,prizeName:p.name,prizeId:p.id};}return{won:false,prizeName:null,prizeId:null};}
@@ -116,15 +118,16 @@ function Registrazione({onLogin,onGoLogin}){
   const[loading,setLoading]=useState(false);
   const[err,setErr]=useState("");
   const[done,setDone]=useState(false);
-  const set=k=>v=>setF(p=>({...p,[k]:v}));
+  const set=k=>v=>{setErr("");setF(p=>({...p,[k]:v}));};
 
   const registra=async()=>{
-    if(!f.nome||!f.cognome||!f.email||!f.password){setErr("Compila tutti i campi obbligatori.");return;}
+    if(!f.nome.trim()||!f.cognome.trim()||!f.email.trim()||!f.password){setErr("Compila tutti i campi obbligatori (tranne telefono).");return;}
     if(f.password.length<8){setErr("La password deve avere almeno 8 caratteri.");return;}
     if(f.password!==f.conferma){setErr("Le password non coincidono.");return;}
     const emailReg=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if(!emailReg.test(f.email)){setErr("Inserisci un'email valida.");return;}
     setLoading(true);setErr("");
+    console.log("Attempting signUp for:", f.email.trim().toLowerCase());
     const{data,error}=await sb.auth.signUp({
       email:f.email.trim().toLowerCase(),
       password:f.password,
@@ -133,7 +136,28 @@ function Registrazione({onLogin,onGoLogin}){
         emailRedirectTo:`https://friggitoriafratellicaruso.github.io/crunchclub`
       }
     });
-    if(error){setErr(error.message==="User already registered"?"Questa email è già registrata. Prova ad accedere.":error.message);setLoading(false);return;}
+    console.log("signUp result:", JSON.stringify({data:!!data,error:error?JSON.stringify(error):null}));
+    if(error){
+      const raw=error.message||error.msg||error.error_description||error.error||"";
+      const msg=typeof raw==="string"?raw:(typeof raw==="object"?JSON.stringify(raw):"errore sconosciuto");
+      const friendly=msg.includes("already registered")||msg.includes("already been registered")
+        ?"Questa email è già registrata. Prova ad accedere."
+        :msg.includes("invalid")||msg.includes("Invalid")
+        ?"Email o password non validi."
+        :msg.includes("rate")||msg.includes("Rate")||msg.includes("429")
+        ?"Troppi tentativi. Aspetta 1 minuto e riprova."
+        :msg.includes("weak")||msg.includes("password")
+        ?"Password troppo debole. Usa almeno 8 caratteri con lettere e numeri."
+        :msg.includes("email")||msg.includes("Email")
+        ?"Controlla l'indirizzo email inserito."
+        :msg==="{}"||msg===""||msg==="errore sconosciuto"
+        ?"Errore di connessione. Controlla la connessione internet e riprova."
+        :"Errore: "+msg;
+      setErr(friendly);
+      // Log completo in console per debug
+      console.error("Supabase signUp error:", JSON.stringify(error));
+      setLoading(false);return;
+    }
     setDone(true);setLoading(false);
   };
 
@@ -201,11 +225,14 @@ function Login({onLogin,onGoRegistra}){
     setLoading(true);setErr("");
     const{data,error}=await sb.auth.signInWithPassword({email:email.trim().toLowerCase(),password});
     if(error){
-      const msg=error.message.includes("Invalid login")||error.message.includes("invalid_credentials")
+      const raw=typeof error.message==="string"?error.message:JSON.stringify(error);
+      const msg=raw.includes("Invalid login")||raw.includes("invalid_credentials")||raw.includes("Invalid credentials")
         ?"Email o password errati. Riprova."
-        :error.message.includes("Email not confirmed")
-        ?"Email non confermata. Controlla la tua casella e clicca il link di attivazione."
-        :error.message;
+        :raw.includes("Email not confirmed")||raw.includes("not confirmed")
+        ?"Email non ancora confermata. Controlla la tua casella e clicca il link di attivazione."
+        :raw.includes("rate")||raw.includes("Rate")
+        ?"Troppi tentativi. Aspetta qualche minuto."
+        :"Errore di accesso. Riprova.";
       setErr(msg);setLoading(false);return;
     }
     // Carica profilo cliente
@@ -218,7 +245,7 @@ function Login({onLogin,onGoRegistra}){
     if(!resetEmail){setErr("Inserisci la tua email.");return;}
     setLoading(true);setErr("");
     const{error}=await sb.auth.resetPasswordForEmail(resetEmail.trim().toLowerCase(),{redirectTo:`https://friggitoriafratellicaruso.github.io/crunchclub`});
-    if(error){setErr(error.message);setLoading(false);return;}
+    if(error){setErr(typeof error.message==="string"?error.message:"Errore nell'invio. Verifica l'email e riprova.");setLoading(false);return;}
     setResetDone(true);setLoading(false);
   };
 
@@ -633,25 +660,29 @@ function App(){
   // Controlla sessione Supabase al caricamento
   useEffect(()=>{
     (async()=>{
-      const{data:{session}}=await sb.auth.getSession();
-      if(session){
-        const{data:cl}=await sb.from("clienti").select("*").eq("auth_id",session.user.id).single();
-        if(cl)setCustomer(cl);
-      }
+      try{
+        const{data:{session},error}=await sb.auth.getSession();
+        if(error){console.warn("Session error (ignored):",error);setAuthLoading(false);return;}
+        if(session){
+          const{data:cl}=await sb.from("clienti").select("*").eq("auth_id",session.user.id).single();
+          if(cl)setCustomer(cl);
+        }
+      }catch(e){console.warn("getSession exception (ignored):",e);}
       setAuthLoading(false);
     })();
     // Ascolta cambiamenti auth (login, logout, conferma email)
     const{data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
-      if(event==="SIGNED_IN"&&session){
-        const{data:cl}=await sb.from("clienti").select("*").eq("auth_id",session.user.id).single();
-        if(cl){
-          setCustomer(cl);
-          // Se c'era un acquisto pendente, reindirizza a completarlo
-          const pendingAcq=sessionStorage.getItem("pending_acq");
-          if(pendingAcq){sessionStorage.removeItem("pending_acq");window.location.href="https://friggitoriafratellicaruso.github.io/crunchclub?acq="+pendingAcq;}
+      try{
+        if(event==="SIGNED_IN"&&session){
+          const{data:cl}=await sb.from("clienti").select("*").eq("auth_id",session.user.id).single();
+          if(cl){
+            setCustomer(cl);
+            const pendingAcq=sessionStorage.getItem("pending_acq");
+            if(pendingAcq){sessionStorage.removeItem("pending_acq");window.location.href="https://friggitoriafratellicaruso.github.io/crunchclub?acq="+pendingAcq;}
+          }
         }
-      }
-      if(event==="SIGNED_OUT")setCustomer(null);
+        if(event==="SIGNED_OUT")setCustomer(null);
+      }catch(e){console.warn("Auth state change error (ignored):",e);}
     });
     return()=>subscription.unsubscribe();
   },[]);
