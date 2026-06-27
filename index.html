@@ -127,7 +127,6 @@ function Registrazione({onLogin,onGoLogin}){
     const emailReg=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if(!emailReg.test(f.email)){setErr("Inserisci un'email valida.");return;}
     setLoading(true);setErr("");
-    console.log("Attempting signUp for:", f.email.trim().toLowerCase());
     const{data,error}=await sb.auth.signUp({
       email:f.email.trim().toLowerCase(),
       password:f.password,
@@ -136,7 +135,15 @@ function Registrazione({onLogin,onGoLogin}){
         emailRedirectTo:`https://friggitoriafratellicaruso.github.io/crunchclub`
       }
     });
-    console.log("signUp result:", JSON.stringify({data:!!data,error:error?JSON.stringify(error):null}));
+    // Mostra errore completo a schermo per debug
+    if(error){
+      const debugMsg="ERRORE SUPABASE:\n"+
+        "status: "+(error.status||"n/a")+"\n"+
+        "code: "+(error.code||"n/a")+"\n"+
+        "message: "+(error.message||"vuoto")+"\n"+
+        "name: "+(error.name||"n/a");
+      setErr(debugMsg);setLoading(false);return;
+    }
     if(error){
       const raw=error.message||error.msg||error.error_description||error.error||"";
       const msg=typeof raw==="string"?raw:(typeof raw==="object"?JSON.stringify(raw):"errore sconosciuto");
