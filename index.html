@@ -638,20 +638,145 @@ function Home({customer,onPlayToken}){
 // ══════════════════════════════════════════════════════════════════
 // PREMI
 // ══════════════════════════════════════════════════════════════════
-function Rewards({customer}){
-  const rewards=[{id:1,icon:"☕",name:"Caffè espresso",points:80,category:"Prodotto"},{id:2,icon:"🏷️",name:"Sconto 10%",points:250,category:"Sconto"},{id:3,icon:"🎁",name:"Gift Card €20",points:700,category:"Gift Card"},{id:4,icon:"🍽️",name:"Cena per 2",points:1800,category:"Esperienza"},{id:5,icon:"🧖",name:"Weekend SPA",points:4000,category:"Esperienza",locked:true}];
-  return <div className="fade" style={{padding:"20px 16px",paddingBottom:80}}>
-    <div style={{marginBottom:20}}><h2 style={{margin:0,fontSize:20,color:T.text}}>Catalogo Premi</h2><p style={{color:T.muted,fontSize:13,marginTop:4}}>Hai <span style={{color:T.accent,fontWeight:700}}>{fmt(customer.points)}</span> punti</p></div>
-    <div style={{display:"grid",gap:12}}>
-      {rewards.map(r=>{const can=customer.points>=r.points&&!r.locked;return <Card key={r.id} style={{padding:18,opacity:r.locked?.6:1}}>
-        <div style={{display:"flex",alignItems:"center",gap:14}}>
-          <div style={{width:50,height:50,background:T.cardHigh,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>{r.icon}</div>
-          <div style={{flex:1}}><div style={{color:T.text,fontWeight:700,fontSize:15,marginBottom:4}}>{r.name}</div><Tag text={r.category}/></div>
-          <div style={{textAlign:"right"}}><div style={{color:can?T.accent:T.muted,fontWeight:800,fontSize:15}}>{fmt(r.points)} pt</div>{can?<div style={{background:T.accent,color:"#000",borderRadius:8,padding:"4px 10px",fontSize:11,fontWeight:700,marginTop:4,cursor:"pointer"}}>Riscatta</div>:<div style={{color:T.dim,fontSize:11,marginTop:4}}>Mancano {fmt(r.points-customer.points)} pt</div>}</div>
-        </div>
-        {can&&<div style={{background:T.accent+"11",borderRadius:8,padding:"6px 10px",marginTop:10,fontSize:12,color:T.accent}}>✅ Mostra al locale per riscattare</div>}
-      </Card>;})}
+// QR riscatto — mostra il codice da far scansionare al gestore
+function QRRiscatto({riscatto,onClose}){
+  const qrRef=useRef(null);
+  useEffect(()=>{
+    if(!qrRef.current)return;
+    qrRef.current.innerHTML="";
+    new QRCode(qrRef.current,{text:riscatto.qr_code,width:220,height:220,colorDark:"#000000",colorLight:"#ffffff",correctLevel:QRCode.CorrectLevel.M});
+  },[riscatto.qr_code]);
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+    <div style={{background:T.card,borderRadius:24,padding:28,maxWidth:340,width:"100%",textAlign:"center"}}>
+      <div style={{fontSize:44,marginBottom:8}}>🎁</div>
+      <h2 style={{color:T.text,fontSize:20,margin:"0 0 4px"}}>{riscatto.premio_nome}</h2>
+      <p style={{color:T.muted,fontSize:13,marginBottom:20}}>Mostra questo QR al banco per riscattare il premio</p>
+      {/* QR */}
+      <div style={{background:"#fff",borderRadius:16,padding:16,display:"inline-block",marginBottom:16}}>
+        <div ref={qrRef}/>
+      </div>
+      {/* Codice testuale sotto il QR */}
+      <div style={{background:T.surface,borderRadius:10,padding:"10px 14px",marginBottom:20}}>
+        <div style={{color:T.muted,fontSize:10,textTransform:"uppercase",marginBottom:4}}>Codice riscatto</div>
+        <div style={{fontFamily:"monospace",color:T.accent,fontSize:13,fontWeight:700,letterSpacing:1,wordBreak:"break-all"}}>{riscatto.qr_code}</div>
+      </div>
+      <div style={{background:T.accent+"11",border:`1px solid ${T.accent}33`,borderRadius:10,padding:"9px 12px",marginBottom:20,fontSize:12,color:T.accent}}>
+        ⚠️ Questo codice è <b>monouso</b> — una volta scansionato i punti verranno scalati.
+      </div>
+      <button onClick={onClose} style={{width:"100%",background:T.cardHigh,border:`1px solid ${T.border}`,color:T.text,borderRadius:12,padding:"12px",fontSize:15,fontWeight:700,cursor:"pointer"}}>Chiudi</button>
     </div>
+  </div>;
+}
+
+function Rewards({customer,onPointsUpdated}){
+  const[catalogo,setCatalogo]=useState([]);
+  const[loadingCat,setLoadingCat]=useState(true);
+  const[riscattoQR,setRiscattoQR]=useState(null);
+  const[riscattiPendenti,setRiscattiPendenti]=useState([]);
+  const[saving,setSaving]=useState(null);
+  const[err,setErr]=useState("");
+
+  // Carica catalogo da DB
+  useEffect(()=>{
+    (async()=>{
+      const{data}=await sb.from("premi_catalogo").select("*").eq("attivo",true).order("ordine",{ascending:true});
+      setCatalogo(data||[]);
+      setLoadingCat(false);
+    })();
+  },[]);
+
+  // Carica riscatti pendenti del cliente
+  useEffect(()=>{
+    (async()=>{
+      const{data}=await sb.from("riscatti").select("*").eq("customer_id",customer.id).eq("status","pending").order("created_at",{ascending:false});
+      setRiscattiPendenti(data||[]);
+    })();
+  },[customer.id,riscattoQR]);
+
+  const riscatta=async(premio)=>{
+    if(customer.points<premio.punti_costo){setErr("Punti insufficienti.");return;}
+    setSaving(premio.id);setErr("");
+    try{
+      const qrCode="RIS-"+Math.random().toString(36).slice(2,7).toUpperCase()+"-"+Math.random().toString(36).slice(2,7).toUpperCase();
+      const id="RSC-"+Math.random().toString(36).slice(2,9).toUpperCase();
+      const scadeAt=new Date(Date.now()+30*24*60*60*1000).toISOString();
+      const payload={
+        id,
+        customer_id:Number(customer.id),
+        customer_name:(customer.name||"")+(customer.cognome?" "+customer.cognome:""),
+        premio_nome:premio.nome,
+        punti_costo:Number(premio.punti_costo),
+        status:"pending",
+        qr_code:qrCode,
+        scade_at:scadeAt,
+      };
+      const{data,error}=await sb.from("riscatti").insert(payload).select().single();
+      if(error){
+        const msg=error?.message||error?.details||error?.hint||JSON.stringify(error)||"Errore DB";
+        throw new Error(msg);
+      }
+      setRiscattoQR(data||payload);
+    }catch(e){
+      const msg=e?.message||JSON.stringify(e)||"Errore sconosciuto";
+      setErr("Errore durante il riscatto: "+msg);
+      console.error("riscatta error:",e);
+    }
+    setSaving(null);
+  };
+
+  return <div className="fade" style={{padding:"20px 16px",paddingBottom:80}}>
+    {riscattoQR&&<QRRiscatto riscatto={riscattoQR} onClose={()=>setRiscattoQR(null)}/>}
+    <div style={{marginBottom:20}}>
+      <h2 style={{margin:0,fontSize:20,color:T.text}}>Catalogo Premi</h2>
+      <p style={{color:T.muted,fontSize:13,marginTop:4}}>Hai <span style={{color:T.accent,fontWeight:700}}>{fmt(customer.points)}</span> punti</p>
+    </div>
+    {err&&<div style={{background:T.rose+"22",border:`1px solid ${T.rose}44`,borderRadius:10,padding:"10px 14px",color:T.rose,fontSize:12,marginBottom:14,wordBreak:"break-all"}}>{err}</div>}
+
+    {/* Riscatti in attesa */}
+    {riscattiPendenti.length>0&&<div style={{marginBottom:20}}>
+      <div style={{color:T.muted,fontSize:11,textTransform:"uppercase",letterSpacing:.5,marginBottom:10}}>⏳ In attesa di riscossione ({riscattiPendenti.length})</div>
+      {riscattiPendenti.map(r=><Card key={r.id} style={{padding:14,marginBottom:10,border:`1px solid ${T.accent}44`}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{color:T.text,fontWeight:700,fontSize:14}}>{r.premio_nome}</div>
+            <div style={{color:T.muted,fontSize:11,marginTop:2}}>Scade il {r.scade_at?.slice(0,10)||"—"}</div>
+          </div>
+          <button onClick={()=>setRiscattoQR(r)} style={{background:`linear-gradient(135deg,${T.accent},${T.rose})`,border:"none",color:"#000",borderRadius:10,padding:"8px 14px",fontWeight:800,fontSize:13,cursor:"pointer"}}>📱 QR</button>
+        </div>
+      </Card>)}
+    </div>}
+
+    {/* Catalogo da DB */}
+    <div style={{color:T.muted,fontSize:11,textTransform:"uppercase",letterSpacing:.5,marginBottom:12}}>🎁 Catalogo</div>
+    {loadingCat?<div style={{textAlign:"center",padding:24}}><Spinner/></div>
+    :catalogo.length===0?<div style={{background:T.card,borderRadius:14,padding:24,textAlign:"center",color:T.muted}}>Nessun premio disponibile al momento.</div>
+    :<div style={{display:"grid",gap:12}}>
+      {catalogo.map(r=>{
+        const can=customer.points>=r.punti_costo;
+        return <Card key={r.id} style={{padding:18,opacity:can?1:.75}}>
+          <div style={{display:"flex",alignItems:"center",gap:14}}>
+            <div style={{width:50,height:50,background:T.cardHigh,borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>{r.icona}</div>
+            <div style={{flex:1}}>
+              <div style={{color:T.text,fontWeight:700,fontSize:15,marginBottom:4}}>{r.nome}</div>
+              {r.descrizione&&<div style={{color:T.muted,fontSize:11,marginBottom:4}}>{r.descrizione}</div>}
+              <Tag text={r.categoria}/>
+            </div>
+            <div style={{textAlign:"right",flexShrink:0}}>
+              <div style={{color:can?T.accent:T.muted,fontWeight:800,fontSize:15,marginBottom:6}}>{fmt(r.punti_costo)} pt</div>
+              {can
+                ?<button onClick={()=>riscatta(r)} disabled={!!saving} style={{background:`linear-gradient(135deg,${T.accent},${T.rose})`,border:"none",color:"#000",borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:800,cursor:"pointer",opacity:saving?0.6:1}}>
+                  {saving===r.id?<Spinner size={12}/>:"Riscatta"}
+                </button>
+                :<div style={{color:T.dim,fontSize:11}}>Mancano {fmt(r.punti_costo-customer.points)} pt</div>
+              }
+            </div>
+          </div>
+          {can&&<div style={{background:T.green+"11",border:`1px solid ${T.green}33`,borderRadius:8,padding:"6px 10px",marginTop:10,fontSize:12,color:T.green}}>
+            ✅ Puoi riscattarlo — clicca "Riscatta" e mostra il QR al banco
+          </div>}
+        </Card>;
+      })}
+    </div>}
   </div>;
 }
 
